@@ -1,0 +1,4 @@
+==> Checking for `sudo` access (which may request your password)...
+sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper
+sudo: a password is required
+Need sudo access on macOS (e.g. the user jianfeisu needs to be an Administrator)!
