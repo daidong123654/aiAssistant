@@ -1,0 +1,6 @@
+funasr
+modelscope
+soundfile
+librosa
+torch
+torchaudio
