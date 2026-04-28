@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +35,8 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output-dir",
         type=Path,
-        default=Path("outputs"),
-        help="Directory for txt/json/srt outputs. Default: outputs",
+        default=Path("output"),
+        help="Root directory for txt/json/docx outputs. Default: output",
     )
     parser.add_argument(
         "--model",
@@ -65,11 +66,6 @@ def parse_args() -> argparse.Namespace:
             "FunASR VAD batching window in seconds. Default: 0, which forces one VAD "
             "segment at a time because Fun-ASR-Nano-2512 does not implement batch decoding."
         ),
-    )
-    parser.add_argument(
-        "--keep-wav",
-        action="store_true",
-        help="Keep the extracted 16 kHz mono wav next to outputs.",
     )
     return parser.parse_args()
 
@@ -121,6 +117,14 @@ def register_nano_remote_code(remote_code: Path = REMOTE_CODE) -> str:
     return str(remote_code)
 
 
+def file_md5(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def extract_audio(input_path: Path, wav_path: Path) -> None:
     cmd = [
         "ffmpeg",
@@ -137,6 +141,24 @@ def extract_audio(input_path: Path, wav_path: Path) -> None:
         str(wav_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def prepare_wav(input_path: Path, dated_output_dir: Path) -> tuple[Path, str, str, str]:
+    source_md5 = file_md5(input_path)
+    if input_path.suffix.lower() == ".wav":
+        wav_path = input_path
+        wav_md5 = file_md5(wav_path)
+    else:
+        temp_wav = dated_output_dir / f"{input_path.stem}.{source_md5}.wav"
+        print(f"[1/4] Converting to 16 kHz mono WAV: {temp_wav}")
+        extract_audio(input_path, temp_wav)
+        wav_md5 = file_md5(temp_wav)
+        wav_path = dated_output_dir / f"{input_path.stem}.{source_md5}.{wav_md5}.wav"
+        if wav_path != temp_wav:
+            temp_wav.replace(wav_path)
+
+    output_stem = f"{input_path.stem}.{source_md5}.{wav_md5}"
+    return wav_path, output_stem, source_md5, wav_md5
 
 
 def normalize_model(value: str) -> str | None:
@@ -167,16 +189,16 @@ def collect_text(result: list[dict[str, Any]]) -> str:
     return "\n".join(chunks).strip()
 
 
-def ms_to_srt_time(ms: int | float) -> str:
+def ms_to_clock_time(ms: int | float) -> str:
     total_ms = int(ms)
     hours, remainder = divmod(total_ms, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
-    seconds, millis = divmod(remainder, 1_000)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+    seconds = remainder // 1_000
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def extract_sentences(result: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
-    sentences: list[tuple[int, int, str]] = []
+def extract_segments(result: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
     for item in result:
         sentence_info = item.get("sentence_info") or []
         for sentence in sentence_info:
@@ -185,33 +207,91 @@ def extract_sentences(result: list[dict[str, Any]]) -> list[tuple[int, int, str]
                 continue
             start = int(sentence.get("start", 0))
             end = int(sentence.get("end", start + 1))
-            sentences.append((start, end, text))
-    return sentences
+            segments.append({"start": start, "end": end, "role": "角色1", "text": text})
+        if sentence_info:
+            continue
+
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+
+        timestamps = item.get("timestamp") or []
+        if timestamps:
+            start = int(timestamps[0][0])
+            end = int(timestamps[-1][1])
+        else:
+            start, end = 0, 1_000
+
+        segments.append({"start": start, "end": end, "role": "角色1", "text": text})
+    return segments
 
 
-def write_outputs(base: Path, result: list[dict[str, Any]]) -> None:
-    text = collect_text(result)
-    base.with_suffix(".txt").write_text(text + ("\n" if text else ""), encoding="utf-8")
-    base.with_suffix(".json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+def format_segment(segment: dict[str, Any]) -> str:
+    return (
+        f"[{ms_to_clock_time(segment['start'])} – {ms_to_clock_time(segment['end'])}] "
+        f"{segment['role']}：{segment['text']}"
     )
 
-    sentences = extract_sentences(result)
-    if not sentences and text:
-        sentences = [(0, 1_000, text)]
 
-    srt_lines: list[str] = []
-    for index, (start, end, sentence) in enumerate(sentences, start=1):
-        srt_lines.extend(
-            [
-                str(index),
-                f"{ms_to_srt_time(start)} --> {ms_to_srt_time(end)}",
-                sentence,
-                "",
-            ]
+def write_docx(path: Path, segments: list[dict[str, Any]], title: str) -> None:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    document = Document()
+    styles = document.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(11)
+
+    heading = document.add_heading(title, level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    for segment in segments:
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.space_after = Pt(6)
+        time_run = paragraph.add_run(
+            f"[{ms_to_clock_time(segment['start'])} – {ms_to_clock_time(segment['end'])}] "
         )
-    base.with_suffix(".srt").write_text("\n".join(srt_lines), encoding="utf-8")
+        time_run.bold = True
+        role_run = paragraph.add_run(f"{segment['role']}：")
+        role_run.bold = True
+        paragraph.add_run(segment["text"])
+
+    document.save(path)
+
+
+def output_path(base: Path, extension: str) -> Path:
+    return base.parent / f"{base.name}.{extension}"
+
+
+def write_outputs(
+    base: Path,
+    result: list[dict[str, Any]],
+    source_path: Path,
+    source_md5: str,
+    wav_md5: str,
+) -> None:
+    segments = extract_segments(result)
+    if not segments:
+        text = collect_text(result)
+        if text:
+            segments = [{"start": 0, "end": 1_000, "role": "角色1", "text": text}]
+
+    transcript = "\n".join(format_segment(segment) for segment in segments)
+    output_path(base, "txt").write_text(transcript + ("\n" if transcript else ""), encoding="utf-8")
+
+    payload = {
+        "source_file": str(source_path),
+        "source_md5": source_md5,
+        "wav_md5": wav_md5,
+        "segments": segments,
+        "raw_result": result,
+    }
+    output_path(base, "json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    write_docx(output_path(base, "docx"), segments, source_path.name)
 
 
 def main() -> int:
@@ -233,52 +313,44 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    output_base = args.output_dir / f"{input_path.stem}.nano2512"
+    dated_output_dir = args.output_dir / datetime.now().strftime("%Y%m%d")
+    dated_output_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="funasr_nano2512_") as temp_dir:
-        temp_wav = Path(temp_dir) / f"{input_path.stem}.16k.wav"
-        print(f"[1/3] Extracting 16 kHz mono audio: {input_path}")
-        extract_audio(input_path, temp_wav)
+    wav_for_asr, output_stem, source_md5, wav_md5 = prepare_wav(input_path, dated_output_dir)
+    output_base = dated_output_dir / output_stem
 
-        if args.keep_wav:
-            kept_wav = output_base.with_suffix(".16k.wav")
-            shutil.copy2(temp_wav, kept_wav)
-            wav_for_asr = kept_wav
-        else:
-            wav_for_asr = temp_wav
+    print("[2/4] Loading Fun-ASR-Nano-2512 on mps. First run may download model files.")
+    from funasr import AutoModel
 
-        print("[2/3] Loading Fun-ASR-Nano-2512 on mps. First run may download model files.")
-        from funasr import AutoModel
+    asr_model = prefer_local_model(args.model)
+    vad_model = prefer_local_model(normalize_model(args.vad_model))
 
-        asr_model = prefer_local_model(args.model)
-        vad_model = prefer_local_model(normalize_model(args.vad_model))
+    model_kwargs: dict[str, Any] = {
+        "model": asr_model,
+        "hub": "hf",
+        "device": "mps",
+        "disable_update": True,
+        "trust_remote_code": True,
+        "remote_code": remote_code,
+    }
+    if vad_model:
+        model_kwargs["vad_model"] = vad_model
 
-        model_kwargs: dict[str, Any] = {
-            "model": asr_model,
-            "hub": "hf",
-            "device": "mps",
-            "disable_update": True,
-            "trust_remote_code": True,
-            "remote_code": remote_code,
-        }
-        if vad_model:
-            model_kwargs["vad_model"] = vad_model
+    model = AutoModel(**model_kwargs)
 
-        model = AutoModel(**model_kwargs)
+    print(f"[3/4] Recognizing with language={args.language!r} on mps...")
+    result = model.generate(
+        input=str(wav_for_asr),
+        language=args.language,
+        batch_size=1,
+        batch_size_s=args.batch_size_s,
+    )
+    print("[4/4] Writing txt/json/docx outputs...")
+    write_outputs(output_base, result, input_path, source_md5, wav_md5)
 
-        print(f"[3/3] Recognizing with language={args.language!r} on mps...")
-        result = model.generate(
-            input=str(wav_for_asr),
-            language=args.language,
-            batch_size=1,
-            batch_size_s=args.batch_size_s,
-        )
-        write_outputs(output_base, result)
-
-    print(f"TXT : {output_base.with_suffix('.txt')}")
-    print(f"JSON: {output_base.with_suffix('.json')}")
-    print(f"SRT : {output_base.with_suffix('.srt')}")
+    print(f"TXT : {output_path(output_base, 'txt')}")
+    print(f"JSON: {output_path(output_base, 'json')}")
+    print(f"DOCX: {output_path(output_base, 'docx')}")
     return 0
 
 

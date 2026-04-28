@@ -729,6 +729,15 @@ class FunASRNano(nn.Module):
                     timestamp["token"] = self.ctc_tokenizer.decode([timestamp["token"]])
                     timestamp["start_time"] = timestamp["start_time"] * 6 * 10 / 1000
                     timestamp["end_time"] = timestamp["end_time"] * 6 * 10 / 1000
+            result["nano_timestamps"] = result.pop("timestamps")
+            result["nano_ctc_timestamps"] = result.pop("ctc_timestamps")
+            result["timestamp"] = [
+                [
+                    int(timestamp["start_time"] * 1000),
+                    int(timestamp["end_time"] * 1000),
+                ]
+                for timestamp in result["nano_timestamps"]
+            ]
 
         if ibest_writer is not None:
             ibest_writer["text"][key[0]] = response.replace("\n", " ")
