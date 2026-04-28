@@ -188,13 +188,13 @@ process_job() {
   fi
   log_script_output "trigger" "$script_log"
 
-  log "click start/export"
-  if ! run_with_timeout "$EXPORT_TIMEOUT_SECONDS" "$script_log" osascript "$EXPORT_SCPT" "$START_CLICK_DELAY_SECONDS" "$EXPORT_CLICK_DELAY_SECONDS"; then
+  log "upload and request source-text download"
+  if ! run_with_timeout "$EXPORT_TIMEOUT_SECONDS" "$script_log" osascript "$EXPORT_SCPT" "$job" "$START_CLICK_DELAY_SECONDS" "$WPS_CONVERSION_TIMEOUT_SECONDS"; then
     log_script_output "export" "$script_log"
-    log "export ui step failed or timed out, continue watching output"
+    log "upload/download ui step failed or timed out, continue watching output"
   else
     log_script_output "export" "$script_log"
-    log "export ui step done"
+    log "upload/download ui step done"
   fi
 
   deadline=$(( $(date +%s) + TRANSCRIBE_TIMEOUT_SECONDS ))

@@ -4,3 +4,8 @@ soundfile
 librosa
 torch
 torchaudio
+transformers
+safetensors
+hf_transfer
+openai-whisper
+tiktoken

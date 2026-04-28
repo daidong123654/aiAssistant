@@ -27,6 +27,11 @@ LFASR_HOST = "https://office-api-ist-dx.iflyaisol.com"
 API_UPLOAD = "/v2/upload"
 API_GET_RESULT = "/v2/getResult"
 
+# 在这里填写你的讯飞接口信息；也可以用命令行参数或环境变量覆盖。
+APPID = "59b81e60"
+API_KEY = "a188a639b083585a34696ffda45f7e6f"
+API_SECRET = "MDRkYzIwNTViZDg5MjE0ZDdmMjAzN2Y3"
+
 
 def md5_file(path, chunk_size=1024 * 1024):
     digest = hashlib.md5()
@@ -299,9 +304,9 @@ def build_outputs(api_response, wav_file, source_md5, wav_md5, output_dir):
 def parse_args():
     parser = argparse.ArgumentParser(description="讯飞星火语音转写，并输出 txt/json/docx。")
     parser.add_argument("audio", help="待转写音频文件路径")
-    parser.add_argument("--appid", default=os.getenv("XFYUN_APPID"), help="讯飞 appId")
-    parser.add_argument("--api-key", default=os.getenv("XFYUN_API_KEY"), help="讯飞 APIKey/accessKeyId")
-    parser.add_argument("--api-secret", default=os.getenv("XFYUN_API_SECRET"), help="讯飞 APISecret/accessKeySecret")
+    parser.add_argument("--appid", default=os.getenv("XFYUN_APPID") or APPID, help="讯飞 appId")
+    parser.add_argument("--api-key", default=os.getenv("XFYUN_API_KEY") or API_KEY, help="讯飞 APIKey/accessKeyId")
+    parser.add_argument("--api-secret", default=os.getenv("XFYUN_API_SECRET") or API_SECRET, help="讯飞 APISecret/accessKeySecret")
     parser.add_argument("--output-root", default="output", help="输出根目录，默认 output")
     parser.add_argument("--poll-interval", type=int, default=10, help="轮询间隔秒数")
     parser.add_argument("--max-attempts", type=int, default=720, help="最大轮询次数")
@@ -311,9 +316,22 @@ def parse_args():
 
 def main():
     args = parse_args()
-    missing = [name for name, value in (("appid", args.appid), ("api-key", args.api_key), ("api-secret", args.api_secret)) if not value]
+    placeholders = {
+        "appid": "请填写你的appId",
+        "api-key": "请填写你的APIKey",
+        "api-secret": "请填写你的APISecret",
+    }
+    missing = [
+        name
+        for name, value in (("appid", args.appid), ("api-key", args.api_key), ("api-secret", args.api_secret))
+        if not value or value == placeholders[name]
+    ]
     if missing:
-        raise SystemExit("缺少参数：" + ", ".join(missing) + "。也可以设置 XFYUN_APPID/XFYUN_API_KEY/XFYUN_API_SECRET。")
+        raise SystemExit(
+            "缺少参数："
+            + ", ".join(missing)
+            + "。请在 Ifasr.py 顶部填写 APPID/API_KEY/API_SECRET，或设置 XFYUN_APPID/XFYUN_API_KEY/XFYUN_API_SECRET。"
+        )
 
     date_dir = dt.datetime.now().strftime("%Y%m%d")
     output_dir = Path(args.output_root).expanduser().resolve() / date_dir

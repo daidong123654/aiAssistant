@@ -26,6 +26,19 @@ python scripts/download_models.py
 
 When these directories exist under `models/`, `scripts/transcribe_video.py` automatically prefers them over remote model ids.
 
+To also download the Nano 2512 model used by the MPS script:
+
+```bash
+python scripts/download_models.py --with-nano-2512
+```
+
+If Hugging Face downloads are slow, use a mirror endpoint:
+
+```bash
+pip install hf_transfer
+python scripts/download_models.py --only-nano-2512 --hf-endpoint https://hf-mirror.com --hf-transfer --max-workers 32
+```
+
 The default models are:
 
 - ASR: `iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
@@ -52,3 +65,27 @@ python scripts/transcribe_video.py /path/to/video.mp4 --punc-model none
 ```
 
 On macOS, `--device cpu` is the safest default. You can try `--device mps`, but the script will fall back to CPU when PyTorch reports that MPS is unavailable. If you use a CUDA machine, try `--device cuda:0`.
+
+## Recognize with Fun-ASR-Nano-2512 on MPS
+
+For the strongest Nano 2512 model with mandatory Apple MPS acceleration:
+
+```bash
+source .venv/bin/activate
+python scripts/translate_nano_mps.py /path/to/video.mp4
+```
+
+This script defaults to `FunAudioLLM/Fun-ASR-Nano-2512`, uses `device="mps"`, and exits instead of falling back to CPU when MPS is unavailable.
+The Nano model implementation is loaded from `third_party/Fun-ASR/model.py`, copied from the official FunAudioLLM/Fun-ASR repository, because the Hugging Face model snapshot does not include that runtime file.
+Keep `--batch-size-s` at its default `0` for this model; the official Nano runtime does not implement batch decoding.
+
+Useful options:
+
+```bash
+python scripts/translate_nano_mps.py /path/to/video.mp4 --language 中文
+python scripts/translate_nano_mps.py /path/to/video.mp4 --language 英文 --keep-wav
+python scripts/translate_nano_mps.py /path/to/video.mp4 --vad-model none
+python scripts/translate_nano_mps.py /path/to/video.mp4 --hf-endpoint https://hf-mirror.com
+```
+
+Outputs are written to `outputs/<video-name>.nano2512.txt`, `.json`, and `.srt`.
