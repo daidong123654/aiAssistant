@@ -2,7 +2,8 @@
 # ============================================================
 # 本地 AI 助理系统 - Mac Studio 端一键部署脚本
 # 适用环境：macOS (Apple Silicon)，已安装 Xcode Command Line Tools
-# 功能：安装 Homebrew, Docker, Ollama, 并启动 n8n, Dify, Paperless-ngx, Open WebUI
+# 功能：安装 Homebrew, Docker, 并启动 n8n, Dify, Paperless-ngx, Open WebUI
+# 本地模型：Ollama 已废弃，改由 models/mlx/sup*.ini 管理 MLX 模型服务
 # ============================================================
 
 set -e  # 遇到错误立即退出
@@ -81,25 +82,15 @@ install_docker() {
     fi
 }
 
-# ---------- 安装 Ollama ----------
-install_ollama() {
-    if command -v ollama &> /dev/null; then
-        print_success "Ollama 已安装"
+# ---------- 检查 MLX 本地模型配置 ----------
+check_mlx_models() {
+    print_step "检查 MLX 本地模型配置"
+    local mlx_dir="$HOME/Work/models/mlx"
+    if ls "$mlx_dir"/sup*.ini > /dev/null 2>&1; then
+        print_success "已发现 MLX supervisor 配置：$mlx_dir/sup*.ini"
+        print_warning "如需启动或重载模型服务，请使用 supervisorctl status/reread/update"
     else
-        print_step "安装 Ollama"
-        brew install ollama
-        # 启动 Ollama 服务
-        brew services start ollama
-        print_success "Ollama 安装并启动"
-    fi
-
-    # 下载推荐模型 (Gemma2 27B)
-    print_step "拉取推荐模型 gemma2:27b (约 16GB，耗时较长)"
-    if ollama list | grep -q "gemma2:27b"; then
-        print_success "模型 gemma2:27b 已存在"
-    else
-        ollama pull gemma2:27b
-        print_success "模型 gemma2:27b 下载完成"
+        print_warning "未找到 $mlx_dir/sup*.ini，请先准备 MLX 模型 supervisor 配置"
     fi
 }
 
@@ -108,12 +99,14 @@ start_n8n() {
     print_step "启动 n8n 工作流引擎"
     if docker ps -a --format '{{.Names}}' | grep -q "^n8n$"; then
         print_success "n8n 容器已存在，跳过创建"
+        print_warning "如需让 n8n 写入 ~/Work/data，请运行 ~/Work/tools/kb_assistant/bin/recreate_n8n_with_work_mount.sh 重建容器挂载"
     else
         docker run -d \
             --name n8n \
             --restart unless-stopped \
             -p 5678:5678 \
             -v n8n_data:/home/node/.n8n \
+            -v "$HOME/Work:/work" \
             -e N8N_SECURE_COOKIE=false \
             n8nio/n8n
         print_success "n8n 已启动，访问 http://localhost:5678"
@@ -160,7 +153,6 @@ start_openwebui() {
 	  -p 3000:8080 \
 	  --name open-webui \
 	  --add-host=host.docker.internal:host-gateway \
-	  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
 	  -e OPENAI_API_BASE_URLS="http://host.docker.internal:9080/v1;http://host.docker.internal:9081/v1;http://host.docker.internal:9082/v1" \
 	  -e OPENAI_API_KEYS="ignored;ignored;ignored" \
 	  -e WEBUI_AUTH=False \
@@ -172,24 +164,25 @@ start_openwebui() {
         #     --name open-webui \
         #     --restart unless-stopped \
         #     -v open-webui:/app/backend/data \
-        #     -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
         #     ghcr.io/open-webui/open-webui:main
         print_success "Open WebUI 已启动，访问 http://localhost:3000"
     fi
 }
 
-# ---------- 配置 Dify 连接 Ollama ----------
-configure_dify_ollama() {
-    print_step "配置 Dify 连接本地 Ollama"
+# ---------- 配置 Dify 连接 MLX ----------
+configure_dify_mlx() {
+    print_step "配置 Dify 连接本地 MLX 模型"
     cat <<EOF
 
-${YELLOW}请手动完成以下步骤以连接 Dify 与 Ollama：${NC}
+${YELLOW}请手动完成以下步骤以连接 Dify 与 MLX 本地模型：${NC}
 1. 访问 http://localhost/install 完成 Dify 初始化（设置管理员邮箱密码）
 2. 登录后进入「设置」->「模型供应商」
-3. 找到「Ollama」，点击「安装」
-4. 点击「添加模型」，填写：
-   - 基础 URL: http://host.docker.internal:11434
-   - 模型名称: gemma2:27b
+3. 选择 OpenAI-API-compatible 类型的模型供应商
+4. 按需添加以下本地模型接口：
+   - 1.5B 基础 URL: http://host.docker.internal:9080/v1
+   - 27B  基础 URL: http://host.docker.internal:9081/v1
+   - 70B  基础 URL: http://host.docker.internal:9082/v1
+   - API Key: 任意非空字符串（本地 MLX 服务默认不校验）
 5. 点击保存
 
 EOF
@@ -204,7 +197,9 @@ show_summary() {
     echo -e "ð¹ Dify AI 编排平台:      ${BLUE}http://localhost${NC}"
     echo -e "ð¹ Paperless-ngx 文档库:  ${BLUE}http://localhost:8000${NC}"
     echo -e "ð¹ Open WebUI 交互界面:   ${BLUE}http://localhost:3000${NC}"
-    echo -e "ð¹ Ollama API 服务:       ${BLUE}http://localhost:11434${NC}"
+    echo -e "ð¹ MLX 1.5B API 服务:     ${BLUE}http://localhost:9080/v1${NC}"
+    echo -e "ð¹ MLX 27B API 服务:      ${BLUE}http://localhost:9081/v1${NC}"
+    echo -e "ð¹ MLX 70B API 服务:      ${BLUE}http://localhost:9082/v1${NC}"
     echo -e "\n${YELLOW}ð 下一步建议：${NC}"
     echo -e "1. 将 NAS 文件夹挂载到 Mac，并在 Paperless-ngx 中设置为消费目录"
     echo -e "2. 在 n8n 中创建自动化工作流串联各服务"
@@ -221,7 +216,7 @@ main() {
     check_network
     install_homebrew
     install_docker
-    install_ollama
+    check_mlx_models
 
     # 拉取必要 Docker 镜像（并行加速）
     print_step "预拉取 Docker 镜像"
@@ -235,7 +230,7 @@ main() {
     start_paperless
     start_openwebui
 
-    configure_dify_ollama
+    configure_dify_mlx
 
     show_summary
 }

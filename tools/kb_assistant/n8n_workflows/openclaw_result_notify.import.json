@@ -1,0 +1,189 @@
+{
+  "name": "OpenClaw 语音结果通知",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "3076db67-c841-4035-a4a1-1e1956161001",
+      "name": "每分钟检查",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8765/notifications?include_failed=1&limit=10",
+        "options": {}
+      },
+      "id": "5c30e6c6-8843-43d6-9f1b-b6b9f5c11002",
+      "name": "读取待通知任务",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nif (Array.isArray(payload)) {\n  return payload.map(item => ({ json: item }));\n}\nif (payload && Array.isArray(payload.data)) {\n  return payload.data.map(item => ({ json: item }));\n}\nreturn [];"
+      },
+      "id": "42d4778a-90a4-4d68-8041-802f15101003",
+      "name": "拆分任务",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-message",
+              "leftValue": "={{ $json.message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cfad3d6e-fd41-4441-a6ee-58146aa31004",
+      "name": "是否有消息",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://OPENCLAW_HOST:OPENCLAW_PORT/send",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.message, task: $json }) }}",
+        "options": {}
+      },
+      "id": "e77f1472-6034-4b63-af9f-996d01961005",
+      "name": "回发 OpenClaw",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        180,
+        -100
+      ],
+      "notes": "把 URL 改成 OpenClaw 实际发送消息接口。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8765/notifications/mark",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ metadata_file: $json.metadata_file }) }}",
+        "options": {}
+      },
+      "id": "3c51498e-15f3-48df-967b-6d58c0f11006",
+      "name": "标记已通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        -100
+      ]
+    }
+  ],
+  "connections": {
+    "每分钟检查": {
+      "main": [
+        [
+          {
+            "node": "读取待通知任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "读取待通知任务": {
+      "main": [
+        [
+          {
+            "node": "拆分任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "拆分任务": {
+      "main": [
+        [
+          {
+            "node": "是否有消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否有消息": {
+      "main": [
+        [
+          {
+            "node": "回发 OpenClaw",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "回发 OpenClaw": {
+      "main": [
+        [
+          {
+            "node": "标记已通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "template",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [],
+  "id": "codexNotifyNfggeDQb"
+}

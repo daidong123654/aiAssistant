@@ -717,12 +717,16 @@ class FunASRNano(nn.Module):
         for ctc_result, result in zip(ctc_results, results):
             result["ctc_text"] = ctc_result["text"].replace("<|nospeech|>", "")
             target_ids = torch.tensor(
-                self.ctc_tokenizer.encode(result["ctc_text"]), dtype=torch.int64
+                self.ctc_tokenizer.encode(result["ctc_text"], allowed_special="all"),
+                dtype=torch.int64,
             )
             result["ctc_timestamps"] = forced_align(
                 ctc_result["ctc_logits"], target_ids, self.blank_id
             )
-            target_ids = torch.tensor(self.ctc_tokenizer.encode(result["text"]), dtype=torch.int64)
+            target_ids = torch.tensor(
+                self.ctc_tokenizer.encode(result["text"], allowed_special="all"),
+                dtype=torch.int64,
+            )
             result["timestamps"] = forced_align(ctc_result["ctc_logits"], target_ids, self.blank_id)
             for timestamps in [result["timestamps"], result["ctc_timestamps"]]:
                 for timestamp in timestamps:

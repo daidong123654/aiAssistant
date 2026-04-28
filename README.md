@@ -6,9 +6,10 @@
 
 本仓库主要包含以下几类内容：
 
-- 一键部署脚本：安装和启动 Homebrew、Docker、Ollama、n8n、Dify、Paperless-ngx、Open WebUI 等组件。
+- 一键部署脚本：安装和启动 Homebrew、Docker、n8n、Dify、Paperless-ngx、Open WebUI 等组件。
 - 文档管理服务：基于 Paperless-ngx 的本地文档归档、OCR 和检索配置。
 - 语音和视频转写工具：包含 Whisper、whisper.cpp、FunASR、Qwen3-ASR 等相关脚本和实验文件。
+- 本地知识库语音助手：通过 OpenClaw、n8n、讯飞转写、MLX 本地模型和 Paperless-ngx，把微信语音整理为语音记录和会议纪要。
 - 本地模型资源：存放 Whisper、MLX、Hugging Face 等模型文件或缓存。
 - 常用环境脚本：Homebrew、Oh My Zsh、Paperless 等本机工具安装脚本。
 
@@ -24,17 +25,18 @@
 │   └── huggingface/       # Hugging Face 本地缓存
 └── tools/                 # 工具脚本与实验项目
     ├── paperless-ngx/     # Paperless-ngx 辅助配置
+    ├── kb_assistant/      # 微信语音到本地知识库的自动化流水线
     ├── transvideo/        # 音视频转写相关工具
     ├── videos/            # 转写测试用音视频文件与结果
-    └── ollama/            # Ollama 源码或本地构建目录
+    └── ollama/            # 历史遗留目录，当前本地模型服务不再依赖 Ollama
 ```
 
 ## 核心能力
 
 ### 本地 AI 服务
 
-- Ollama：本地大模型运行服务。
-- Open WebUI：统一的本地模型聊天界面。
+- MLX 本地模型服务：通过 `models/mlx/sup*.ini` 由 supervisor 管理，并以 OpenAI 兼容接口暴露。
+- Open WebUI：统一的本地模型聊天界面，可连接 MLX 本地模型接口。
 - Dify：AI 应用编排和工作流平台。
 - n8n：自动化工作流引擎。
 
@@ -50,6 +52,16 @@
 - whisper.cpp 命令行转写。
 - Qwen3-ASR 本地服务接口。
 - FunASR 相关脚本和第三方运行时。
+- 讯飞转写脚本：`tools/transvideo/xfyunllm`，可生成带时间轴的 txt/json/docx。
+
+### 本地知识库助手
+
+- OpenClaw 接收微信语音消息。
+- n8n 负责消息编排、文件保存和结果通知。
+- `tools/kb_assistant/voice_record_pipeline.py` 监听 `data/src/YYYYMMDD/` 并处理音频。
+- 讯飞转写生成 `语音记录.docx`。
+- 本地 MLX 模型生成 `语音记录.会议纪要.md`。
+- Paperless-ngx 自动消费生成文件，形成可检索的本地知识库。
 
 ## 环境要求
 
@@ -77,7 +89,7 @@ cd ~/Work
 bash depoly.sh
 ```
 
-该脚本会依次检查网络、安装基础工具、启动 Docker 服务、安装 Ollama、拉取推荐模型，并启动 n8n、Dify、Paperless-ngx 和 Open WebUI。
+该脚本会依次检查网络、安装基础工具、启动 Docker 服务，检查 `models/mlx/sup*.ini` 本地模型配置，并启动 n8n、Dify、Paperless-ngx 和 Open WebUI。
 
 ### 3. 访问服务
 
@@ -89,7 +101,113 @@ bash depoly.sh
 | Dify | http://localhost | AI 应用编排 |
 | Paperless-ngx | http://localhost:8000 | 文档管理与 OCR |
 | Open WebUI | http://localhost:3000 | 本地模型聊天界面 |
-| Ollama API | http://localhost:11434 | 本地模型 API |
+| MLX 1.5B API | http://localhost:9080/v1 | 本地小模型 API |
+| MLX 27B API | http://localhost:9081/v1 | 本地中型模型 API |
+| MLX 70B API | http://localhost:9082/v1 | 本地大模型 API |
+
+## 本地模型管理
+
+Ollama 已废弃，当前本地模型统一使用 MLX 运行，配置文件位于：
+
+```text
+models/mlx/sup1.5b.ini
+models/mlx/sup27b.ini
+models/mlx/sup70b.ini
+```
+
+这些 `sup*.ini` 是 supervisor program 配置。当前以配置文件内容为准，`sup27b.ini` 和 `sup70b.ini` 的文件名与实际 program 有历史遗留差异：
+
+| 配置文件 | 模型 | 端口 | 用途建议 |
+| --- | --- | --- | --- |
+| `models/mlx/sup1.5b.ini` | `mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit` | 9080 | 高频分类、轻量摘要 |
+| `models/mlx/sup70b.ini` | `mlx-community/gemma-2-27b-it-4bit` | 9081 | 日常问答、较复杂摘要 |
+| `models/mlx/sup27b.ini` | `mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit` | 9082 | 会议纪要、深度分析 |
+
+### 启动方式
+
+推荐使用 supervisor 管理后台服务：
+
+```bash
+supervisorctl status
+supervisorctl reread
+supervisorctl update
+supervisorctl start mlx-1.5b
+supervisorctl start mlx-27b
+supervisorctl start mlx-70b
+supervisorctl stop mlx-1.5b
+supervisorctl stop mlx-27b
+supervisorctl stop mlx-70b
+```
+
+如果只想前台临时启动，也可以使用 `models/mlx/m.sh`：
+
+```bash
+cd ~/Work/models/mlx
+./m.sh 1.5b
+./m.sh 27b
+./m.sh 70b
+```
+
+`m.sh` 和 `sup*.ini` 都使用 `/Users/jianfeisu/mlx_env/bin/python -m mlx_lm.server` 启动服务，并设置模型缓存目录：
+
+```bash
+export HF_HOME="/Users/jianfeisu/Work/models/huggingface"
+export HF_ENDPOINT="https://hf-mirror.com"
+export HF_HUB_ENABLE_HF_TRANSFER="1"
+```
+
+MLX 模型文件和缓存默认放在 `models/huggingface/`。替换模型时优先修改对应的 `models/mlx/sup*.ini`，再执行 `supervisorctl reread && supervisorctl update`。
+
+### 本地模型测试用例
+
+服务启动后可以使用 OpenAI 兼容接口测试。最简单的问题统一问“地球到太阳的距离是多少？”。
+
+测试 1.5B 模型：
+
+```bash
+curl http://127.0.0.1:9080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream": false,
+    "model": "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+    "messages": [
+      {"role": "user", "content": "地球到太阳的距离是多少？"}
+    ],
+    "temperature": 0.7
+  }'
+```
+
+测试 27B 模型：
+
+```bash
+curl http://127.0.0.1:9081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream": false,
+    "model": "mlx-community/gemma-2-27b-it-4bit",
+    "messages": [
+      {"role": "user", "content": "地球到太阳的距离是多少？"}
+    ],
+    "temperature": 0.7
+  }'
+```
+
+测试 70B 模型：
+
+```bash
+curl http://127.0.0.1:9082/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream": false,
+    "model": "mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit",
+    "messages": [
+      {"role": "user", "content": "地球到太阳的距离是多少？"}
+    ],
+    "temperature": 0.7
+  }'
+```
+
+正常情况下，回答应包含“约 1.5 亿公里”或“1 个天文单位（AU）”之类的表述。
 
 ## Paperless-ngx
 
@@ -143,6 +261,34 @@ curl -X POST http://localhost:7777/transcribe -F "file=@/path/to/audio.wav"
 ffmpeg -i input.m4a -ar 16000 -ac 1 -c:a pcm_s16le output.wav
 ```
 
+## 本地知识库语音助手
+
+详细说明见：
+
+- `tools/kb_assistant/README.md`
+- `tools/kb_assistant/WORKFLOW_DESIGN.md`
+
+监听当天微信语音输入目录：
+
+```bash
+python3 tools/kb_assistant/voice_record_pipeline.py --watch
+```
+
+默认目录约定：
+
+- 输入目录：`data/src/YYYYMMDD/`
+- 原始音频归档：`data/archive/YYYYMMDD/`
+- 输出目录：`data/dst/YYYYMMDD/<任务名>/`
+- Paperless-ngx 导入目录：`paperless-ngx/consume/`
+
+每条语音会生成：
+
+- `语音记录.docx`
+- `语音记录.txt`
+- `语音记录.json`
+- `语音记录.会议纪要.md`
+- `metadata.json`
+
 ## 常用维护命令
 
 查看 Docker 服务状态：
@@ -166,16 +312,17 @@ docker compose pull
 docker compose up -d
 ```
 
-查看 Ollama 模型：
+查看 MLX 模型服务状态：
 
 ```bash
-ollama list
+supervisorctl status
 ```
 
-拉取新模型：
+重载本地模型配置：
 
 ```bash
-ollama pull <model-name>
+supervisorctl reread
+supervisorctl update
 ```
 
 ## 注意事项
@@ -188,8 +335,8 @@ ollama pull <model-name>
 ## 建议工作流
 
 1. 使用 `depoly.sh` 启动基础 AI 服务。
-2. 在 Open WebUI 中连接 Ollama，本地测试模型能力。
-3. 在 Dify 中配置 Ollama 作为模型供应商，搭建可复用 AI 应用。
+2. 在 Open WebUI 中连接 `http://host.docker.internal:9080/v1`、`9081/v1`、`9082/v1`，本地测试模型能力。
+3. 在 Dify 中配置 OpenAI-API-compatible 模型供应商，指向 MLX 本地模型接口，搭建可复用 AI 应用。
 4. 在 Paperless-ngx 中维护文档库，并按需接入 OCR 和自动归档流程。
 5. 使用 n8n 串联文档、转写、模型调用和通知推送等自动化任务。
 

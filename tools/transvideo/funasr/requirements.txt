@@ -9,3 +9,4 @@ safetensors
 hf_transfer
 openai-whisper
 tiktoken
+python-docx

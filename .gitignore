@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local runtime data
+data/
+
+# Local model/cache data
+models/
+
+# Paperless runtime folders
+paperless-ngx/consume/
+paperless-ngx/export/
+
+# Local media/test outputs
+tools/videos/
