@@ -109,7 +109,7 @@
         "url": "http://host.docker.internal:8765/audio/jobs",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ audio_path: $('标准化消息').item.json.save_path, container_audio_path: $('标准化消息').item.json.container_save_path, message_id: $('标准化消息').item.json.message_id, from_user: $('标准化消息').item.json.from_user, date: $('标准化消息').item.json.date, idempotency_key: $('标准化消息').item.json.message_id }) }}",
+        "jsonBody": "={{ JSON.stringify({ audio_path: $('标准化消息').item.json.save_path, container_audio_path: $('标准化消息').item.json.container_save_path, original_file_name: $('标准化消息').item.json.file_name || $('标准化消息').item.json.save_path.split('/').pop(), original_file_path: $('标准化消息').item.json.save_path, message_id: $('标准化消息').item.json.message_id, from_user: $('标准化消息').item.json.from_user, date: $('标准化消息').item.json.date, idempotency_key: 'path:' + $('标准化消息').item.json.save_path }) }}",
         "options": {}
       },
       "id": "7a76bf04-2c35-4e10-930a-0c0a50fa2008",
@@ -232,7 +232,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "active": false,
+  "active": true,
   "versionId": "template",
   "meta": {
     "templateCredsSetupCompleted": true

@@ -134,7 +134,15 @@ python3 ~/Work/tools/kb_assistant/voice_record_pipeline.py \
 ~/Work/tools/kb_assistant/bin/start_api.sh
 ```
 
-生产主链路由 n8n 调用 API 提交任务，不需要启动 watcher。需要手工导入、NAS 同步等目录兜底时，再启动本地语音监听：
+生产主链路由 n8n 调用 API 提交任务。手工导入、NAS 同步等目录兜底使用 `submit_media_jobs.py` 扫描 `data/src/media` 并提交到同一个 API，避免绕过 job 状态记录。
+
+手动扫描一次：
+
+```bash
+python3 ~/Work/tools/kb_assistant/submit_media_jobs.py
+```
+
+如果确实想绕过 API 直接处理目录，也可以启动本地语音监听：
 
 ```bash
 ~/Work/tools/kb_assistant/bin/start_watcher.sh
@@ -193,6 +201,8 @@ POST http://host.docker.internal:8765/audio/jobs
 ```json
 {
   "audio_path": "/Users/jianfeisu/Work/data/src/media/20260429/demo.amr",
+  "original_file_name": "demo.amr",
+  "original_file_path": "/Users/jianfeisu/Work/data/src/media/20260429/demo.amr",
   "message_id": "wxmsg_abc123",
   "from_user": "张三",
   "idempotency_key": "wxmsg_abc123"

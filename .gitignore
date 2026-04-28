@@ -14,3 +14,5 @@ paperless-ngx/export/
 
 # Local media/test outputs
 tools/videos/
+
+/*/*.DS_*

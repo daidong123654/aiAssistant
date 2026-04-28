@@ -41,6 +41,8 @@ def ext_from_payload(payload):
 
 
 def normalize(payload, inbox_root):
+    if isinstance(payload.get("body"), dict):
+        payload = payload["body"]
     ymd = today_ymd()
     message_id = safe_name(payload.get("message_id") or payload.get("msg_id"), "message")
     from_user = safe_name(payload.get("from_user") or payload.get("sender") or payload.get("user"), "unknown")
@@ -52,6 +54,7 @@ def normalize(payload, inbox_root):
         "message_id": message_id,
         "from_user": from_user,
         "message_type": payload.get("message_type") or payload.get("type"),
+        "message_text": payload.get("text") or payload.get("content") or payload.get("message") or "",
         "file_url": payload.get("file_url") or payload.get("url"),
         "file_name": payload.get("file_name") or payload.get("filename"),
         "inbox_dir": str(inbox_dir),

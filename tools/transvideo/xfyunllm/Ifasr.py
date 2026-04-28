@@ -125,6 +125,7 @@ def collect_file_info(source_path):
     return {
         "file_name": source.name,
         "file_path": str(source),
+        "file_size": stat.st_size,
         "name_time": format_datetime(name_datetime),
         "created_time": format_datetime(created_datetime),
         "modified_time": format_datetime(modified_datetime),
@@ -212,7 +213,7 @@ class XfyunAsrClient:
             "signatureRandom": self.signature_random,
             "fileSize": str(audio_path.stat().st_size),
             "fileName": audio_path.name,
-            "language": "autodialect",
+            "language": "chinese",
             "duration": str(wav_duration_ms(audio_path)),
             "roleType": self.role_type,
         }
@@ -284,6 +285,14 @@ def metadata_lines(file_info, source_md5, wav_md5):
         f"文件名称：{file_info['file_name']}",
         f"文件完整路径：{file_info['file_path']}",
     ]
+    if file_info.get("file_size_human"):
+        lines.append(f"文件大小：{file_info['file_size_human']}")
+    elif file_info.get("file_size") is not None:
+        lines.append(f"文件大小：{file_info['file_size']} 字节")
+    if file_info.get("duration_human"):
+        lines.append(f"音频时长：{file_info['duration_human']}")
+    elif file_info.get("duration_ms") is not None:
+        lines.append(f"音频时长：{file_info['duration_ms']} 毫秒")
     if source_md5 == wav_md5:
         lines.append(f"音频文件MD5：{source_md5}")
     else:

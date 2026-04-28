@@ -1,5 +1,6 @@
 {
   "name": "OpenClaw 微信语音接收",
+  "id": "FZIgqSjHQNnyGukQ",
   "nodes": [
     {
       "parameters": {
@@ -109,7 +110,7 @@
         "url": "http://host.docker.internal:8765/audio/jobs",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ audio_path: $('标准化消息').item.json.save_path, container_audio_path: $('标准化消息').item.json.container_save_path, message_id: $('标准化消息').item.json.message_id, from_user: $('标准化消息').item.json.from_user, date: $('标准化消息').item.json.date, idempotency_key: $('标准化消息').item.json.message_id }) }}",
+        "jsonBody": "={{ JSON.stringify({ audio_path: $('标准化消息').item.json.save_path, container_audio_path: $('标准化消息').item.json.container_save_path, original_file_name: $('标准化消息').item.json.file_name || $('标准化消息').item.json.save_path.split('/').pop(), original_file_path: $('标准化消息').item.json.save_path, message_id: $('标准化消息').item.json.message_id, from_user: $('标准化消息').item.json.from_user, date: $('标准化消息').item.json.date, idempotency_key: 'path:' + $('标准化消息').item.json.save_path }) }}",
         "options": {}
       },
       "id": "7a76bf04-2c35-4e10-930a-0c0a50fa2008",
@@ -124,7 +125,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { ok: true, message: '已收到语音，已提交后台转写任务', save_path: $('标准化消息').item.json.save_path, job_id: $('提交转写任务').item.json.job_id, status: $('提交转写任务').item.json.status } }}",
+        "responseBody": "={{ { ok: true, message: $('提交转写任务').item.json.requires_confirmation ? $('提交转写任务').item.json.message : '已收到语音，已提交后台转写任务', save_path: $('标准化消息').item.json.save_path, job_id: $('提交转写任务').item.json.job_id, status: $('提交转写任务').item.json.status, requires_confirmation: $('提交转写任务').item.json.requires_confirmation, confirmation_id: $('提交转写任务').item.json.confirmation_id } }}",
         "options": {}
       },
       "id": "4e075cf5-c046-4eb8-a07d-7a93b0cf2006",
@@ -138,8 +139,26 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8765/audio/confirmations/resolve",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message_text: $('标准化消息').item.json.message_text, message_id: $('标准化消息').item.json.message_id, from_user: $('标准化消息').item.json.from_user, date: $('标准化消息').item.json.date }) }}",
+        "options": {}
+      },
+      "id": "6ed9a8ab-9d84-4139-a03e-f8ec126e8d42",
+      "name": "处理确认回复",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -40,
+        120
+      ]
+    },
+    {
+      "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { ok: false, message: '当前消息不是语音，已忽略', message_type: $json.message_type } }}",
+        "responseBody": "={{ { ok: $('处理确认回复').item.json.ok, message: $('处理确认回复').item.json.message || '当前消息不是语音，已忽略', message_type: $('标准化消息').item.json.message_type, status: $('处理确认回复').item.json.status, job_id: $('处理确认回复').item.json.job_id } }}",
         "options": {
           "responseCode": 200
         }
@@ -149,7 +168,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        -40,
+        200,
         120
       ]
     }
@@ -188,7 +207,7 @@
         ],
         [
           {
-            "node": "回复已忽略",
+            "node": "处理确认回复",
             "type": "main",
             "index": 0
           }
@@ -227,12 +246,23 @@
           }
         ]
       ]
+    },
+    "处理确认回复": {
+      "main": [
+        [
+          {
+            "node": "回复已忽略",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
-  "active": false,
+  "active": true,
   "versionId": "template",
   "meta": {
     "templateCredsSetupCompleted": true

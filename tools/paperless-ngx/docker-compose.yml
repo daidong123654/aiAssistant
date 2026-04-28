@@ -39,23 +39,40 @@ services:
       POSTGRES_DB: paperless
       POSTGRES_USER: paperless
       POSTGRES_PASSWORD: paperless
+  gotenberg:
+    image: docker.io/gotenberg/gotenberg:8
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --chromium-disable-javascript=true
+      - --chromium-allow-list=file:///tmp/.*
+  tika:
+    image: docker.io/apache/tika:latest
+    restart: unless-stopped
   webserver:
     image: ghcr.io/paperless-ngx/paperless-ngx:latest
     restart: unless-stopped
     depends_on:
       - db
       - broker
+      - gotenberg
+      - tika
     ports:
       - "8000:8000"
     volumes:
       - data:/usr/src/paperless/data
       - media:/usr/src/paperless/media
       - ./export:/usr/src/paperless/export
-      - /Users/jianfeisu/Work/tools/paperless-ngx/consume:/usr/src/paperless/consume
+      - ./scripts:/usr/src/paperless/scripts:ro
+      - /Users/jianfeisu/Work/data/dst:/usr/src/paperless/consume
     env_file: docker-compose.env
     environment:
       PAPERLESS_REDIS: redis://broker:6379
       PAPERLESS_DBHOST: db
+      PAPERLESS_TIKA_ENABLED: 1
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_POST_CONSUME_SCRIPT: /usr/src/paperless/scripts/set_source_field.py
 volumes:
   data:
   media:

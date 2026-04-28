@@ -2,19 +2,24 @@
 # -*- coding: utf-8 -*-
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 import traceback
 import urllib.error
 import urllib.request
+import wave
 
 
 WORK_ROOT = Path(__file__).resolve().parents[2]
 XFYUNLLM_DIR = WORK_ROOT / "tools" / "transvideo" / "xfyunllm"
+LOCAL_FUNASR_SCRIPT = WORK_ROOT / "tools" / "transvideo" / "funasr" / "scripts" / "translate_nano_mps.py"
+AUDIO_CONFIRM_ROOT = WORK_ROOT / "data" / "jobs" / "audio_confirmations"
 if str(XFYUNLLM_DIR) not in sys.path:
     sys.path.insert(0, str(XFYUNLLM_DIR))
 
@@ -54,6 +59,60 @@ def stable_job_name(source):
     return f"{now_stamp()}_{safe_stem}"
 
 
+def format_bytes(size):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.2f} {unit}"
+        value /= 1024
+
+
+def format_duration_ms(milliseconds):
+    total_seconds = max(0, int(round(milliseconds / 1000)))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours:
+        return f"{hours}小时{minutes:02d}分{seconds:02d}秒"
+    return f"{minutes}分{seconds:02d}秒"
+
+
+def audio_duration_ms(path):
+    source = Path(path).expanduser().resolve()
+    if source.suffix.lower() == ".wav":
+        with wave.open(str(source), "rb") as wav_file:
+            return int(round(wav_file.getnframes() / wav_file.getframerate() * 1000))
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    import subprocess
+
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(round(float(result.stdout.strip()) * 1000))
+    except ValueError:
+        return None
+
+
 def write_json_file(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -82,9 +141,26 @@ def write_error(output_dir, exc):
 
 def read_transcript(json_path):
     payload = json.loads(json_path.read_text(encoding="utf-8"))
-    lines = [segment["line"] for segment in payload.get("segments", []) if segment.get("line")]
+    lines = []
+    for segment in payload.get("segments", []):
+        if segment.get("line"):
+            lines.append(segment["line"])
+            continue
+        if all(key in segment for key in ("start", "end", "role", "text")):
+            lines.append(
+                f"[{format_asr_time(segment['start'])} - {format_asr_time(segment['end'])}] "
+                f"{segment['role']}：{segment['text']}"
+            )
     plain_text = "\n".join(segment.get("text", "") for segment in payload.get("segments", []))
     return "\n".join(lines), plain_text, payload
+
+
+def format_asr_time(milliseconds):
+    total_seconds = max(0, int(milliseconds) // 1000)
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def strip_deepseek_thinking(text):
@@ -185,7 +261,11 @@ def import_to_paperless(paths, consume_dir, prefix):
     return imported
 
 
-def run_asr(audio_path, work_dir, args):
+def run_asr(audio_path, work_dir, args, original_file_info=None):
+    file_info = Ifasr.collect_file_info(audio_path)
+    if original_file_info:
+        file_info.update({key: value for key, value in original_file_info.items() if value})
+    batch_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
     wav_file, source_md5, wav_md5 = Ifasr.prepare_wav(audio_path, work_dir)
     client = Ifasr.XfyunAsrClient(
         args.xfyun_appid,
@@ -204,8 +284,126 @@ def run_asr(audio_path, work_dir, args):
         source_md5,
         wav_md5,
         work_dir,
+        file_info,
+        batch_id,
     )
     return txt_path, json_path, docx_path, wav_file
+
+
+def latest_output_triplet(output_root):
+    candidates = sorted(output_root.glob("**/*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for json_path in candidates:
+        base = json_path.with_suffix("")
+        txt_path = base.with_suffix(".txt")
+        docx_path = base.with_suffix(".docx")
+        if txt_path.exists() and docx_path.exists():
+            return txt_path, json_path, docx_path
+    raise RuntimeError(f"FunASR 未生成完整的 txt/json/docx 输出：{output_root}")
+
+
+def run_local_funasr(audio_path, work_dir, args):
+    if not LOCAL_FUNASR_SCRIPT.exists():
+        raise FileNotFoundError(f"本地 FunASR 脚本不存在：{LOCAL_FUNASR_SCRIPT}")
+    output_root = ensure_dir(work_dir / "funasr")
+    command = [
+        args.local_funasr_python,
+        str(LOCAL_FUNASR_SCRIPT),
+        str(audio_path),
+        "--output-dir",
+        str(output_root),
+    ]
+    if args.local_funasr_hf_endpoint:
+        command.extend(["--hf-endpoint", args.local_funasr_hf_endpoint])
+    result = subprocess.run(
+        command,
+        cwd=str(LOCAL_FUNASR_SCRIPT.parents[1]),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    (work_dir / "funasr_stdout.log").write_text(result.stdout, encoding="utf-8")
+    (work_dir / "funasr_stderr.log").write_text(result.stderr, encoding="utf-8")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"本地 FunASR 转写失败：exit {result.returncode}; "
+            f"stderr={result.stderr.strip()[-1000:]}"
+        )
+    txt_path, json_path, docx_path = latest_output_triplet(output_root)
+    return txt_path, json_path, docx_path, audio_path
+
+
+def build_local_funasr_confirmation_id(job_name, archived_source):
+    material = f"{job_name}|{archived_source}"
+    return "local-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
+
+
+def create_local_funasr_confirmation(
+    *,
+    args,
+    archived_source,
+    output_dir,
+    job_name,
+    ymd,
+    original_file_info,
+    xfyun_error,
+):
+    confirmation_id = build_local_funasr_confirmation_id(job_name, archived_source)
+    confirm_dir = ensure_dir(AUDIO_CONFIRM_ROOT / ymd / confirmation_id)
+    state_path = confirm_dir / "confirmation.json"
+    state = {
+        "confirmation_id": confirmation_id,
+        "confirmation_type": "local_funasr_fallback",
+        "status": "pending",
+        "created_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "audio_path": str(archived_source),
+        "original_file_name": original_file_info.get("file_name"),
+        "original_file_path": original_file_info.get("file_path"),
+        "message_id": args.message_id,
+        "from_user": args.from_user,
+        "task_dir": str(output_dir),
+        "xfyun_error": str(xfyun_error),
+        "request_payload": {
+            "audio_path": str(archived_source),
+            "original_file_name": original_file_info.get("file_name"),
+            "original_file_path": original_file_info.get("file_path"),
+            "message_id": args.message_id,
+            "from_user": args.from_user,
+            "date": ymd,
+            "force": True,
+            "local_funasr_confirmed": True,
+        },
+        "message": (
+            "讯飞转写失败，已暂停处理。\n"
+            f"- 原始文件名：{original_file_info.get('file_name')}\n"
+            f"- 失败原因：{str(xfyun_error)[:300]}\n"
+            f"- 确认码：{confirmation_id}\n"
+            "是否改用本地 FunASR 模型转写？\n"
+            f"确认请回复：确认本地 {confirmation_id}\n"
+            f"不转请回复：取消本地 {confirmation_id}"
+        ),
+    }
+    write_json_file(state_path, state)
+    write_status(
+        output_dir,
+        "waiting_local_funasr_confirmation",
+        source_file=str(archived_source),
+        original_file_name=original_file_info.get("file_name"),
+        original_file_path=original_file_info.get("file_path"),
+        confirmation_file=str(state_path),
+        confirmation_id=confirmation_id,
+        xfyun_error=str(xfyun_error),
+    )
+    return {
+        "job_name": job_name,
+        "date": ymd,
+        "status": "waiting_local_funasr_confirmation",
+        "created_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "source_file": str(archived_source),
+        "confirmation_file": str(state_path),
+        "confirmation_id": confirmation_id,
+        "xfyun_error": str(xfyun_error),
+    }
 
 
 def process_audio(audio_path, args):
@@ -216,11 +414,34 @@ def process_audio(audio_path, args):
         raise ValueError(f"不支持的音频格式：{source.suffix}")
 
     ymd = today_ymd()
+    original_file_name = args.original_file_name or source.name
+    original_file_path = args.original_file_path or str(source)
+    original_size = source.stat().st_size
+    original_duration_ms = audio_duration_ms(source)
+    original_file_info = {
+        "file_name": original_file_name,
+        "file_path": original_file_path,
+        "file_size": original_size,
+        "file_size_human": format_bytes(original_size),
+    }
+    if original_duration_ms is not None:
+        original_file_info["duration_ms"] = original_duration_ms
+        original_file_info["duration_human"] = format_duration_ms(original_duration_ms)
     job_name = stable_job_name(source)
     archive_dir = ensure_dir(args.archive_root / ymd)
     output_dir = ensure_dir(args.output_root / ymd / job_name)
     work_dir = ensure_dir(output_dir / "_asr")
-    write_status(output_dir, "processing", source_file=str(source))
+    write_status(
+        output_dir,
+        "processing",
+        source_file=str(source),
+        original_file_name=original_file_name,
+        original_file_path=original_file_path,
+        original_file_size=original_size,
+        original_file_size_human=format_bytes(original_size),
+        original_duration_ms=original_duration_ms,
+        original_duration_human=format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
+    )
 
     try:
         archived_source = archive_dir / f"{job_name}{source.suffix.lower()}"
@@ -229,8 +450,40 @@ def process_audio(audio_path, args):
         else:
             archived_source = source
 
-        write_status(output_dir, "transcribing", source_file=str(archived_source))
-        txt_path, json_path, docx_path, wav_file = run_asr(archived_source, work_dir, args)
+        write_status(
+            output_dir,
+            "transcribing",
+            source_file=str(archived_source),
+            original_file_name=original_file_name,
+            original_file_path=original_file_path,
+            original_file_size=original_size,
+            original_file_size_human=format_bytes(original_size),
+            original_duration_ms=original_duration_ms,
+            original_duration_human=format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
+        )
+        asr_backend = "local_funasr" if args.local_funasr_confirmed else "xfyun"
+        if args.local_funasr_confirmed:
+            txt_path, json_path, docx_path, wav_file = run_local_funasr(archived_source, work_dir, args)
+        else:
+            try:
+                txt_path, json_path, docx_path, wav_file = run_asr(
+                    archived_source,
+                    work_dir,
+                    args,
+                    original_file_info=original_file_info,
+                )
+            except Exception as exc:
+                if not args.enable_local_funasr_fallback:
+                    raise
+                return create_local_funasr_confirmation(
+                    args=args,
+                    archived_source=archived_source,
+                    output_dir=output_dir,
+                    job_name=job_name,
+                    ymd=ymd,
+                    original_file_info=original_file_info,
+                    xfyun_error=exc,
+                )
         transcript_with_time, transcript_plain, payload = read_transcript(json_path)
 
         final_docx = output_dir / "语音记录.docx"
@@ -240,7 +493,17 @@ def process_audio(audio_path, args):
         shutil.copy2(txt_path, final_txt)
         shutil.copy2(json_path, final_json)
 
-        write_status(output_dir, "summarizing", source_file=str(archived_source))
+        write_status(
+            output_dir,
+            "summarizing",
+            source_file=str(archived_source),
+            original_file_name=original_file_name,
+            original_file_path=original_file_path,
+            original_file_size=original_size,
+            original_file_size_human=format_bytes(original_size),
+            original_duration_ms=original_duration_ms,
+            original_duration_human=format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
+        )
         minutes = generate_minutes_with_llm(
             transcript_with_time,
             model=args.llm_model,
@@ -251,7 +514,17 @@ def process_audio(audio_path, args):
         minutes_path = output_dir / "语音记录.会议纪要.md"
         minutes_path.write_text(minutes + "\n", encoding="utf-8")
 
-        write_status(output_dir, "indexing_dify", source_file=str(archived_source))
+        write_status(
+            output_dir,
+            "indexing_dify",
+            source_file=str(archived_source),
+            original_file_name=original_file_name,
+            original_file_path=original_file_path,
+            original_file_size=original_size,
+            original_file_size_human=format_bytes(original_size),
+            original_duration_ms=original_duration_ms,
+            original_duration_human=format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
+        )
         dify_result = None
         dify_error = None
         try:
@@ -273,6 +546,12 @@ def process_audio(audio_path, args):
             "date": ymd,
             "status": "completed",
             "created_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "original_file_name": original_file_name,
+            "original_file_path": original_file_path,
+            "original_file_size": original_size,
+            "original_file_size_human": format_bytes(original_size),
+            "original_duration_ms": original_duration_ms,
+            "original_duration_human": format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
             "source_file": str(archived_source),
             "wav_file": str(wav_file),
             "transcript_docx": str(final_docx),
@@ -280,6 +559,7 @@ def process_audio(audio_path, args):
             "transcript_json": str(final_json),
             "minutes_md": str(minutes_path),
             "model": args.llm_model,
+            "asr_backend": asr_backend,
             "segment_count": len(payload.get("segments", [])),
             "transcript_chars": len(transcript_plain),
         }
@@ -290,7 +570,17 @@ def process_audio(audio_path, args):
         metadata_path = output_dir / "metadata.json"
         write_json_file(metadata_path, metadata)
 
-        write_status(output_dir, "importing", source_file=str(archived_source))
+        write_status(
+            output_dir,
+            "importing",
+            source_file=str(archived_source),
+            original_file_name=original_file_name,
+            original_file_path=original_file_path,
+            original_file_size=original_size,
+            original_file_size_human=format_bytes(original_size),
+            original_duration_ms=original_duration_ms,
+            original_duration_human=format_duration_ms(original_duration_ms) if original_duration_ms is not None else None,
+        )
         paperless_files = import_to_paperless(
             [final_docx, minutes_path],
             args.paperless_consume_dir,
@@ -334,6 +624,10 @@ def parse_args():
     parser.add_argument("--inbox-root", default=str(WORK_ROOT / "data" / "src" / "media"), type=Path)
     parser.add_argument("--archive-root", default=str(WORK_ROOT / "data" / "archive"), type=Path)
     parser.add_argument("--output-root", default=str(WORK_ROOT / "data" / "dst"), type=Path)
+    parser.add_argument("--original-file-name", default="", help="最原始的音频文件名，用于写入最终文档和元数据")
+    parser.add_argument("--original-file-path", default="", help="最原始的音频文件路径，用于写入最终文档和元数据")
+    parser.add_argument("--message-id", default="", help="OpenClaw/微信消息 ID，用于失败后确认回调")
+    parser.add_argument("--from-user", default="", help="OpenClaw/微信发送者，用于失败后确认回调")
     parser.add_argument("--paperless-consume-dir", default=str(WORK_ROOT / "paperless-ngx" / "consume"))
     parser.add_argument(
         "--llm-url",
@@ -369,6 +663,10 @@ def parse_args():
     parser.add_argument("--poll-interval", type=int, default=10)
     parser.add_argument("--max-attempts", type=int, default=720)
     parser.add_argument("--insecure", action="store_true")
+    parser.add_argument("--enable-local-funasr-fallback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--local-funasr-confirmed", action="store_true", help="跳过讯飞，直接使用本地 FunASR 转写")
+    parser.add_argument("--local-funasr-python", default=os.getenv("LOCAL_FUNASR_PYTHON", sys.executable))
+    parser.add_argument("--local-funasr-hf-endpoint", default=os.getenv("HF_ENDPOINT", "https://hf-mirror.com"))
     args = parser.parse_args()
 
     args.inbox_root = args.inbox_root.expanduser().resolve()
